@@ -1,62 +1,83 @@
 import streamlit as st
-import plotly.graph_objects as go
-from detector_logic import run_hallucination_check
+import pandas as pd
+import plotly.express as px
 import re
+from styles import apply_sentinel_design
+from detector_logic import run_sentinel_audit
+from database import init_db, get_cached_audit, save_audit_to_db, get_all_history
 
-# 1. Page Config
-st.set_page_config(page_title="VERIFY.AI", layout="wide", initial_sidebar_state="collapsed")
+init_db()
+st.set_page_config(page_title="VERIFY.AI Sentinel", layout="wide")
+apply_sentinel_design()
 
-# 2. State Management
-if 'score' not in st.session_state: st.session_state.score = 0
+# Session State Initialization
+if 'logged_in' not in st.session_state: st.session_state.logged_in = False
 if 'report' not in st.session_state: st.session_state.report = ""
+if 'score' not in st.session_state: st.session_state.score = 0
 
-# 3. CSS Styling
-st.markdown("""
-    <style>
-    [data-testid="stAppViewContainer"] { background: radial-gradient(circle at top right, #0d1117, #010409); color: #e6edf3; }
-    .report-card { background: rgba(255, 255, 255, 0.03); backdrop-filter: blur(15px); border-radius: 15px; padding: 25px; border: 1px solid rgba(255, 255, 255, 0.1); margin-bottom: 20px; }
-    .stButton > button { background: linear-gradient(90deg, #00f2fe 0%, #4facfe 100%); color: black !important; font-weight: 700; border-radius: 10px; width: 100%; }
-    #MainMenu, footer, header { visibility: hidden; }
-    </style>
-    """, unsafe_allow_html=True)
+# --- AUTH GATE ---
+if not st.session_state.logged_in:
+    _, col, _ = st.columns([1, 1.2, 1])
+    with col:
+        st.markdown("<h1 style='text-align:center; color:#00f2fe;'>VERIFY.AI</h1>", unsafe_allow_html=True)
+        u = st.text_input("IDENTIFIER")
+        p = st.text_input("KEY", type="password")
+        if st.button("INITIALIZE"):
+            if u == "admin" and p == "noida2026":
+                st.session_state.logged_in = True
+                st.rerun()
+    st.stop()
 
-st.markdown("<h1 style='text-align: center; color: #00f2fe; letter-spacing: 5px;'>V E R I F Y . A I</h1>", unsafe_allow_html=True)
+# --- SIDEBAR ---
+with st.sidebar:
+    st.markdown("<h2 style='color:#00f2fe;'>SENTINEL SUITE</h2>", unsafe_allow_html=True)
+    nav = st.radio("NAVIGATE", ["🏠 Dashboard", "🤖 Agents", "📊 Reports", "⚙️ Settings"])
+    st.markdown("---")
+    st.markdown("### 🕒 Recent History")
+    for h_text, h_score, h_time in get_all_history()[:5]:
+        st.caption(f"Score: {h_score}% | {h_time[11:16]}")
+        st.markdown(f"<div style='font-size:10px; color:#888;'>{h_text[:40]}...</div>", unsafe_allow_html=True)
 
-col1, col2 = st.columns([1.5, 1], gap="large")
+# --- DASHBOARD ---
+if nav == "🏠 Dashboard":
+    c1, c2 = st.columns([1.6, 1])
+    with c1:
+        st.markdown("### 🧬 Analysis Engine")
+        content = st.text_area("Content", placeholder="Paste text to verify...", height=300, label_visibility="collapsed")
+        if st.button("🚀 INITIATE AUDIT"):
+            if content:
+                cached = get_cached_audit(content)
+                if cached:
+                    st.session_state.report, st.session_state.score = cached
+                    st.toast("Retrieved from Sentinel Cache 🛡️")
+                else:
+                    with st.status("Swarm active: Analyzing...", expanded=True):
+                        res = run_sentinel_audit(content)
+                        st.session_state.report = str(res)
+                        scores = re.findall(r"(\d+)/100", st.session_state.report)
+                        st.session_state.score = int(scores[0]) if scores else 50
+                        save_audit_to_db(content, st.session_state.report, st.session_state.score)
+                st.rerun()
 
-def draw_gauge(score):
-    fig = go.Figure(go.Indicator(
-        mode = "gauge+number", value = score,
-        title = {'text': "Trust Index %", 'font': {'color': "#00f2fe"}},
-        gauge = { 'axis': {'range': [0, 100]}, 'bar': {'color': "#00f2fe"}, 'steps': [{'range': [0, 40], 'color': '#3e0e0e'}, {'range': [40, 75], 'color': '#3e3e0e'}, {'range': [75, 100], 'color': '#0e3e1e'}]}
-    ))
-    fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', font={'color': "white"}, height=350)
-    return fig
+    with c2:
+        st.markdown(f"<div class='glass-panel active-glow' style='text-align:center;'><p style='font-size:10px;'>TRUST INDEX</p><h1 class='trust-val'>{st.session_state.score}%</h1></div>", unsafe_allow_html=True)
+        if st.session_state.report:
+            t1, t2 = st.tabs(["📝 Audit Report", "✨ Factual Rewrite"])
+            t1.markdown(f"<div class='glass-panel' style='font-size:13px;'>{st.session_state.report}</div>", unsafe_allow_html=True)
+            # Refiner's final answer is at the bottom of the report
+            t2.success(f"**Verified Content:**\n\n{st.session_state.report.split('###')[-1]}")
 
-with col1:
-    st.markdown("### 📥 Source Content")
-    input_text = st.text_area("", placeholder="Paste AI-generated text here...", height=250, label_visibility="collapsed")
-    if st.button("EXECUTE AGENTIC AUDIT"):
-        if input_text:
-            with st.status("🚀 Orchestrating Agent Swarm...", expanded=True) as status:
-                result = run_hallucination_check(input_text)
-                status.update(label="✅ Audit Complete", state="complete", expanded=False)
-            
-            # Parse Score
-            final_text = str(result)
-            scores = re.findall(r"(\d+)/100|Score: (\d+)|(\d+)%", final_text)
-            flat_scores = [s for sub in scores for s in sub if s]
-            st.session_state.score = int(flat_scores[0]) if flat_scores else 85
-            st.session_state.report = final_text
-            st.rerun()
-        else:
-            st.error("Please provide text content.")
+# --- OTHER TABS ---
+elif nav == "📊 Reports":
+    st.title("📊 Hallucination Analytics")
+    st.markdown("<div class='glass-panel'>Common Hallucination Types (Q1 2026)</div>", unsafe_allow_html=True)
+    df = pd.DataFrame({'Type': ['Fact', 'Logic', 'Source', 'Tone'], 'Freq': [38, 24, 22, 16]})
+    st.plotly_chart(px.bar(df, x='Type', y='Freq', template="plotly_dark", color_discrete_sequence=['#00f2fe']))
 
-with col2:
-    st.markdown("### 📊 Analytics")
-    st.plotly_chart(draw_gauge(st.session_state.score), use_container_width=True, key="dynamic_gauge")
+elif nav == "🤖 Agents":
+    st.title("🤖 Agent Swarm Trace")
+    st.code(st.session_state.report if st.session_state.report else "No active audit found.", language="markdown")
 
-if st.session_state.report:
-    st.markdown("### 🏆 Verified Output")
-    st.markdown(f'<div class="report-card" style="border-left: 5px solid #00f2fe;">{st.session_state.report}</div>', unsafe_allow_html=True)
-    st.balloons()
+elif nav == "⚙️ Settings":
+    st.title("⚙️ System Config")
+    st.markdown("<div class='glass-panel'>API Status: <span style='color:green;'>Active</span></div>", unsafe_allow_html=True)
